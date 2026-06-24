@@ -1,0 +1,21 @@
+# CRITICAL — never commit secrets
+.env
+*.env.local
+
+# Node
+node_modules/
+npm-debug.log*
+
+# Generated artifacts — commit these if you want deployment history
+# abis/
+# deployments/
+
+# OS
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Logs
+logs/
+*.log
