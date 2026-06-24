@@ -73,50 +73,50 @@ async function deployContract(name, constructorArgs, wallet, provider) {
 // ─────────────────────────────────────────────
 async function main() {
   console.log(`\n${"═".repeat(60)}`);
-  console.log(`  Arc Prediction Markets — Full System Deploy`);
+  console.log(`  Arc Prediction Markets — Deploy`);
   console.log(`${"═".repeat(60)}`);
-  console.log(`  Time: ${new Date().toISOString()}`);
 
   const provider = getProvider();
   await assertArcChain(provider);
   const wallet = getWallet(provider);
 
-  console.log(`\n👤 Deployer:  ${wallet.address}`);
-
+  console.log(`\n👤 Deployer: ${wallet.address}`);
   const nativeBal = await provider.getBalance(wallet.address);
-  console.log(`💰 USDC bal:  ${ethers.formatUnits(nativeBal, 18)} USDC`);
+  console.log(`💰 USDC bal: ${ethers.formatUnits(nativeBal, 18)} USDC`);
   if (nativeBal === 0n) {
-    console.error(`❌ No USDC for gas. Get from: https://faucet.circle.com/`);
+    console.error(`❌ No USDC. Get from: https://faucet.circle.com/`);
     process.exit(1);
   }
 
-  const USDC_ADDRESS       = process.env.USDC_ADDRESS       || "0x3600000000000000000000000000000000000000";
-  const PROTOCOL_FEE_BPS   = parseInt(process.env.PROTOCOL_FEE_BPS       || "200");
-  const FRESHNESS_SECONDS  = parseInt(process.env.ORACLE_FRESHNESS_SECONDS || "3600");
+  const USDC_ADDRESS      = process.env.USDC_ADDRESS || "0x3600000000000000000000000000000000000000";
+  const PROTOCOL_FEE_BPS  = parseInt(process.env.PROTOCOL_FEE_BPS || "200");
+  const FRESHNESS_SECONDS = parseInt(process.env.ORACLE_FRESHNESS_SECONDS || "3600");
 
-  // ── 1. Deploy PriceOracle ─────────────────────────────────────────────
-  console.log(`\n${"─".repeat(60)}`);
-  console.log(`Step 1/2 — PriceOracle`);
-  console.log(`${"─".repeat(60)}`);
+  // ── Step 1: PriceOracle ───────────────────────────────────────────────
+  // Skip if already deployed (reuse existing oracle)
+  let oracleAddress = process.env.ORACLE_ADDRESS;
 
-  const { address: oracleAddress } = await deployContract(
-    "PriceOracle",
-    [],   // no constructor args — pre-registers BTC/ETH/SOL feeds in constructor
-    wallet,
-    provider
-  );
+  if (oracleAddress) {
+    console.log(`\n✅ Reusing existing PriceOracle: ${oracleAddress}`);
+  } else {
+    console.log(`\n${"─".repeat(50)}`);
+    console.log(`Step 1/2 — PriceOracle`);
+    console.log(`${"─".repeat(50)}`);
+    const result = await deployContract("PriceOracle", [], wallet, provider);
+    oracleAddress = result.address;
+  }
 
-  // ── 2. Deploy MarketFactory ───────────────────────────────────────────
-  console.log(`\n${"─".repeat(60)}`);
+  // ── Step 2: MarketFactory ─────────────────────────────────────────────
+  console.log(`\n${"─".repeat(50)}`);
   console.log(`Step 2/2 — MarketFactory`);
-  console.log(`${"─".repeat(60)}`);
+  console.log(`${"─".repeat(50)}`);
 
   const { address: factoryAddress } = await deployContract(
     "MarketFactory",
     [
       USDC_ADDRESS,
       oracleAddress,
-      wallet.address,   // treasury = deployer wallet (change this in production)
+      wallet.address,
       PROTOCOL_FEE_BPS,
       FRESHNESS_SECONDS,
     ],
@@ -130,7 +130,7 @@ async function main() {
   console.log(`${"═".repeat(60)}`);
   console.log(`PriceOracle:   ${oracleAddress}`);
   console.log(`MarketFactory: ${factoryAddress}`);
-  console.log(`\nAdd these to Railway Variables:`);
+  console.log(`\nAdd to Railway Variables:`);
   console.log(`  ORACLE_ADDRESS=${oracleAddress}`);
   console.log(`  FACTORY_ADDRESS=${factoryAddress}`);
   console.log(`  SKIP_DEPLOY=true`);
