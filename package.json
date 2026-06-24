@@ -1,0 +1,26 @@
+{
+  "name": "arc-prediction-markets",
+  "version": "1.0.0",
+  "description": "Capital-efficient prediction markets on Arc Testnet — oracle-resolved, USDC-settled",
+  "type": "module",
+  "main": "scripts/deploy.js",
+  "scripts": {
+    "deploy": "node scripts/deploy.js",
+    "create-market": "node scripts/createMarket.js",
+    "place-bet": "node scripts/placeBet.js",
+    "resolve": "node scripts/resolveMarket.js",
+    "claim": "node scripts/claimWinnings.js",
+    "info": "node scripts/marketInfo.js",
+    "start": "node scripts/deploy.js"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "ethers": "^6.13.0",
+    "solc": "^0.8.25"
+  },
+  "author": "Nuel Magazine",
+  "license": "MIT"
+}
