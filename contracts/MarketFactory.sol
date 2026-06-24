@@ -5,21 +5,6 @@ import "./BinaryMarket.sol";
 import "./ScalarMarket.sol";
 import "./interfaces/IPriceOracle.sol";
 
-// ─────────────────────────────────────────────────────────────────────────────
-// MarketFactory — Creates and tracks all prediction markets
-//
-// This is the single entry point for the entire protocol.
-// Deploy this once → use it to spawn unlimited markets.
-//
-// Design:
-//   - Stores oracle address — all child markets inherit it
-//   - Validates all market parameters before deployment
-//   - Emits events for off-chain indexing
-//   - Owner can pause factory to stop new market creation
-//   - Treasury address receives all protocol fees from all markets
-//   - Protocol fee and freshness window are configurable
-// ─────────────────────────────────────────────────────────────────────────────
-
 contract MarketFactory {
 
     // ── State ─────────────────────────────────────────────────────────────
@@ -27,24 +12,37 @@ contract MarketFactory {
     address public treasury;
     address public oracle;
     address public usdc;
+    uint256 public feeBps;
+    uint256 public freshnessWindow;
+    bool    public paused;
 
-    uint256 public feeBps;            // protocol fee for all markets
-    uint256 public freshnessWindow;   // max oracle age in seconds
-    bool    public paused;            // emergency stop — no new markets
-
-    // All deployed binary markets
     address[] public binaryMarkets;
-
-    // All deployed scalar markets
     address[] public scalarMarkets;
 
-    // marketAddress → true (quick lookup)
-    mapping(address => bool) public isBinaryMarket;
-    mapping(address => bool) public isScalarMarket;
-
-    // creator → list of markets they created
+    mapping(address => bool)     public isBinaryMarket;
+    mapping(address => bool)     public isScalarMarket;
     mapping(address => address[]) public creatorBinaryMarkets;
     mapping(address => address[]) public creatorScalarMarkets;
+
+    // ── Structs — avoids stack too deep ───────────────────────────────────
+    // All child constructor args packed into memory structs.
+    // Solidity counts struct fields as ONE stack slot, not N slots.
+    struct BinaryParams {
+        bytes32 feedId;
+        string  question;
+        uint256 strikePrice;
+        uint256 expiryTime;
+        uint256 resolutionTime;
+    }
+
+    struct ScalarParams {
+        bytes32 feedId;
+        string  question;
+        uint256 floorPrice;
+        uint256 capPrice;
+        uint256 expiryTime;
+        uint256 resolutionTime;
+    }
 
     // ── Events ────────────────────────────────────────────────────────────
     event BinaryMarketCreated(
@@ -68,23 +66,22 @@ contract MarketFactory {
         uint256 resolutionTime
     );
 
-    event OracleUpdated  (address indexed oldOracle,   address indexed newOracle);
-    event TreasuryUpdated(address indexed oldTreasury, address indexed newTreasury);
-    event FeeUpdated     (uint256 oldFee, uint256 newFee);
+    event OracleUpdated   (address indexed oldOracle,   address indexed newOracle);
+    event TreasuryUpdated (address indexed oldTreasury, address indexed newTreasury);
+    event FeeUpdated      (uint256 oldFee, uint256 newFee);
     event FreshnessUpdated(uint256 oldWindow, uint256 newWindow);
-    event Paused         (bool paused);
+    event Paused          (bool paused);
 
     // ── Errors ────────────────────────────────────────────────────────────
     error Unauthorized();
     error ZeroAddress();
     error FactoryPaused();
     error InvalidFee();
-    error InvalidTimestamps();
     error InvalidPriceRange();
     error InvalidStrikePrice();
     error FeedNotRegistered(bytes32 feedId);
-    error ExpiryMustBeBeforeResolution();
     error ExpiryMustBeInFuture();
+    error ExpiryMustBeBeforeResolution();
 
     // ── Modifiers ─────────────────────────────────────────────────────────
     modifier onlyOwner() {
@@ -108,31 +105,26 @@ contract MarketFactory {
         if (_usdc     == address(0)) revert ZeroAddress();
         if (_oracle   == address(0)) revert ZeroAddress();
         if (_treasury == address(0)) revert ZeroAddress();
-        if (_feeBps   >  1000)       revert InvalidFee(); // max 10%
+        if (_feeBps   >  1000)       revert InvalidFee();
 
-        owner            = msg.sender;
-        usdc             = _usdc;
-        oracle           = _oracle;
-        treasury         = _treasury;
-        feeBps           = _feeBps;
-        freshnessWindow  = _freshnessWindow;
+        owner           = msg.sender;
+        usdc            = _usdc;
+        oracle          = _oracle;
+        treasury        = _treasury;
+        feeBps          = _feeBps;
+        freshnessWindow = _freshnessWindow;
     }
 
     // ─────────────────────────────────────────────────────────────────────
     // CREATE BINARY MARKET
-    //
-    // @param feedId         Oracle feed ID (e.g. keccak256("BTC_USD"))
-    // @param question       Human-readable question string
-    // @param strikePrice    Price threshold in 8 decimals
-    // @param expiryTime     Unix timestamp — betting closes
-    // @param resolutionTime Unix timestamp — oracle is read (must be > expiry)
+    // Parameters packed into BinaryParams struct to avoid stack too deep
     // ─────────────────────────────────────────────────────────────────────
     function createBinaryMarket(
-        bytes32       feedId,
+        bytes32        feedId,
         string calldata question,
-        uint256       strikePrice,
-        uint256       expiryTime,
-        uint256       resolutionTime
+        uint256        strikePrice,
+        uint256        expiryTime,
+        uint256        resolutionTime
     )
         external
         notPaused
@@ -141,33 +133,24 @@ contract MarketFactory {
         // ── Validate ──────────────────────────────────────────────────────
         if (!IPriceOracle(oracle).feedExists(feedId))
             revert FeedNotRegistered(feedId);
-
         if (strikePrice == 0)
             revert InvalidStrikePrice();
-
         if (expiryTime <= block.timestamp)
             revert ExpiryMustBeInFuture();
-
         if (resolutionTime <= expiryTime)
             revert ExpiryMustBeBeforeResolution();
 
-        // ── Deploy ────────────────────────────────────────────────────────
-        BinaryMarket m = new BinaryMarket(
-            usdc,
-            oracle,
-            address(this),
-            treasury,
-            msg.sender,
-            feedId,
-            question,
-            strikePrice,
-            expiryTime,
-            resolutionTime,
-            feeBps,
-            freshnessWindow
-        );
+        // ── Pack into struct → deploy ─────────────────────────────────────
+        // Packing into memory struct keeps stack depth under 16 slots
+        BinaryParams memory p = BinaryParams({
+            feedId:         feedId,
+            question:       question,
+            strikePrice:    strikePrice,
+            expiryTime:     expiryTime,
+            resolutionTime: resolutionTime
+        });
 
-        market = address(m);
+        market = _deployBinary(p);
 
         // ── Track ─────────────────────────────────────────────────────────
         binaryMarkets.push(market);
@@ -187,13 +170,6 @@ contract MarketFactory {
 
     // ─────────────────────────────────────────────────────────────────────
     // CREATE SCALAR MARKET
-    //
-    // @param feedId         Oracle feed ID
-    // @param question       Human-readable question string
-    // @param floorPrice     Minimum price (8 dec) — below this = full SHORT win
-    // @param capPrice       Maximum price (8 dec) — above this = full LONG win
-    // @param expiryTime     Unix timestamp — positions lock
-    // @param resolutionTime Unix timestamp — oracle is read
     // ─────────────────────────────────────────────────────────────────────
     function createScalarMarket(
         bytes32        feedId,
@@ -210,37 +186,26 @@ contract MarketFactory {
         // ── Validate ──────────────────────────────────────────────────────
         if (!IPriceOracle(oracle).feedExists(feedId))
             revert FeedNotRegistered(feedId);
-
         if (floorPrice == 0 || capPrice == 0)
             revert InvalidPriceRange();
-
         if (floorPrice >= capPrice)
             revert InvalidPriceRange();
-
         if (expiryTime <= block.timestamp)
             revert ExpiryMustBeInFuture();
-
         if (resolutionTime <= expiryTime)
             revert ExpiryMustBeBeforeResolution();
 
-        // ── Deploy ────────────────────────────────────────────────────────
-        ScalarMarket m = new ScalarMarket(
-            usdc,
-            oracle,
-            address(this),
-            treasury,
-            msg.sender,
-            feedId,
-            question,
-            floorPrice,
-            capPrice,
-            expiryTime,
-            resolutionTime,
-            feeBps,
-            freshnessWindow
-        );
+        // ── Pack into struct → deploy ─────────────────────────────────────
+        ScalarParams memory p = ScalarParams({
+            feedId:         feedId,
+            question:       question,
+            floorPrice:     floorPrice,
+            capPrice:       capPrice,
+            expiryTime:     expiryTime,
+            resolutionTime: resolutionTime
+        });
 
-        market = address(m);
+        market = _deployScalar(p);
 
         // ── Track ─────────────────────────────────────────────────────────
         scalarMarkets.push(market);
@@ -260,9 +225,60 @@ contract MarketFactory {
     }
 
     // ─────────────────────────────────────────────────────────────────────
+    // INTERNAL: deploy BinaryMarket
+    // Separated into its own function — each function has its own stack frame.
+    // This is the key fix: splitting the deployment into a separate internal
+    // function resets the stack depth counter to 0 for that call frame.
+    // ─────────────────────────────────────────────────────────────────────
+    function _deployBinary(BinaryParams memory p)
+        internal
+        returns (address)
+    {
+        BinaryMarket m = new BinaryMarket(
+            usdc,
+            oracle,
+            address(this),
+            treasury,
+            tx.origin,        // original caller (creator)
+            p.feedId,
+            p.question,
+            p.strikePrice,
+            p.expiryTime,
+            p.resolutionTime,
+            feeBps,
+            freshnessWindow
+        );
+        return address(m);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // INTERNAL: deploy ScalarMarket
+    // ─────────────────────────────────────────────────────────────────────
+    function _deployScalar(ScalarParams memory p)
+        internal
+        returns (address)
+    {
+        ScalarMarket m = new ScalarMarket(
+            usdc,
+            oracle,
+            address(this),
+            treasury,
+            tx.origin,        // original caller (creator)
+            p.feedId,
+            p.question,
+            p.floorPrice,
+            p.capPrice,
+            p.expiryTime,
+            p.resolutionTime,
+            feeBps,
+            freshnessWindow
+        );
+        return address(m);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
     // VIEWS
     // ─────────────────────────────────────────────────────────────────────
-
     function getBinaryMarketCount() external view returns (uint256) {
         return binaryMarkets.length;
     }
@@ -294,7 +310,6 @@ contract MarketFactory {
     // ─────────────────────────────────────────────────────────────────────
     // ADMIN
     // ─────────────────────────────────────────────────────────────────────
-
     function setOracle(address newOracle) external onlyOwner {
         if (newOracle == address(0)) revert ZeroAddress();
         emit OracleUpdated(oracle, newOracle);
